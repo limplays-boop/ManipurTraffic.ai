@@ -7,6 +7,23 @@ export type MapPlace = {
   longitude: number
 }
 
+export type TrafficRiskAssessment = {
+  status: 'available' | 'partial' | 'unavailable'
+  model_name: string
+  model_version: string
+  risk_score: number | null
+  risk_level: 'unknown' | 'low' | 'moderate' | 'high' | 'critical'
+  factors: {
+    name: string
+    score: number
+    observed_value: string
+    data_source: string
+  }[]
+  assessed_at: string
+  method_summary: string
+  limitation: string
+}
+
 export type RoutePreview = {
   coordinates: [number, number][]
   distanceKm: number
@@ -14,6 +31,7 @@ export type RoutePreview = {
   source: string
   trafficAdjusted: boolean
   trafficDelayMinutes: number | null
+  riskAssessment?: TrafficRiskAssessment | null
   fallbackMessage?: string
 }
 
@@ -34,6 +52,7 @@ export type LocationTraffic = {
     coordinates: [number, number][]
   } | null
   fetched_at: string
+  risk_assessment: TrafficRiskAssessment
 }
 
 type NominatimResult = {
@@ -326,6 +345,7 @@ type LiveRouteResponse = {
   distance_meters: number
   travel_duration_seconds: number
   traffic_delay_seconds: number | null
+  risk_assessment: TrafficRiskAssessment | null
   geometry: {
     type: 'LineString'
     coordinates: [number, number][]
@@ -367,6 +387,7 @@ export async function getDrivingRoute(
       trafficDelayMinutes: route.traffic_delay_seconds === null
         ? null
         : route.traffic_delay_seconds / 60,
+      riskAssessment: route.risk_assessment,
     }
   } catch (error) {
     liveTrafficFailure = error instanceof Error ? error.message : liveTrafficFailure

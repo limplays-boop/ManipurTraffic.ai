@@ -5,6 +5,10 @@ from models.accident_history import (
     HistoricalAccidentHistoryResponse,
     HistoricalAccidentYear,
     HistoricalBlackspotRecord,
+    PublicAccidentDemoAnalysis,
+    PublicAccidentDemoIncident,
+    PublicAccidentDemoPattern,
+    PublicAccidentDemoResponse,
 )
 
 
@@ -14,6 +18,7 @@ class HistoricalAccidentProvider:
     DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "historical"
     ANNUAL_TOTALS_FILE = "morth_manipur_state_accidents_2019_2023.csv"
     BLACKSPOTS_FILE = "morth_manipur_nh_blackspots_2016_2018.csv"
+    DEMO_INCIDENTS_FILE = "manipur_public_demo_incidents.csv"
 
     @staticmethod
     def _read_rows(path: Path) -> list[dict[str, str]]:
@@ -86,5 +91,97 @@ class HistoricalAccidentProvider:
                 "Published historical aggregates are available. Location rows are "
                 "not geocoded, and this data does not support a calibrated accident "
                 "probability model."
+            ),
+        )
+
+    def get_demo_incidents(self) -> PublicAccidentDemoResponse:
+        rows = self._read_rows(self.DATA_DIR / self.DEMO_INCIDENTS_FILE)
+        incidents = [
+            PublicAccidentDemoIncident(
+                **{
+                    **{
+                        key: value
+                        for key, value in row.items()
+                        if key != "source_url"
+                    },
+                    "vehicles_reported": [
+                        value.strip()
+                        for value in row["vehicles_reported"].split(";")
+                        if value.strip()
+                    ],
+                    "latitude": float(row["latitude"])
+                    if row["latitude"]
+                    else None,
+                    "longitude": float(row["longitude"])
+                    if row["longitude"]
+                    else None,
+                    "training_eligible": row["training_eligible"].lower()
+                    == "true",
+                    "source_reference": row["report_nature"],
+                }
+            )
+            for row in rows
+        ]
+        sample_size = len(incidents)
+        demo_patterns = [
+            (
+                "Two-wheeler involvement",
+                lambda incident: any(
+                    any(
+                        keyword in vehicle.casefold()
+                        for keyword in ("motorcycle", "scooter", "activa", "two-wheeler")
+                    )
+                    for vehicle in incident.vehicles_reported
+                ),
+                "Vehicle descriptions mention a motorcycle, scooter, Activa, or two-wheeler.",
+            ),
+            (
+                "Turning or crossing conflict described",
+                lambda incident: any(
+                    keyword in incident.event_type_reported.casefold()
+                    for keyword in ("turn", "cross")
+                ),
+                "The report summary mentions a turn or crossing movement.",
+            ),
+            (
+                "Serious injury described",
+                lambda incident: any(
+                    keyword in incident.injury_outcome_reported.casefold()
+                    for keyword in ("severe", "grievous", "fatal", "died")
+                ),
+                "The report summary mentions a severe or grievous injury, or a death.",
+            ),
+        ]
+        patterns = [
+            PublicAccidentDemoPattern(
+                name=name,
+                matched_reports=sum(matches(incident) for incident in incidents),
+                sample_size=sample_size,
+                evidence_rule=evidence_rule,
+            )
+            for name, matches, evidence_rule in demo_patterns
+            if sample_size and any(matches(incident) for incident in incidents)
+        ]
+        return PublicAccidentDemoResponse(
+            status="demo_only",
+            state="Manipur",
+            incidents=incidents,
+            analysis=PublicAccidentDemoAnalysis(
+                model_name="TR-04 Public Report Pattern Demo",
+                method="rule_based_pattern_scan",
+                sample_size=sample_size,
+                patterns=patterns,
+                risk_score_available=False,
+                note=(
+                    "These keyword-based patterns describe only this small sourced "
+                    "sample. They are not statewide rates, trained predictions, or "
+                    "calibrated risk scores."
+                ),
+            ),
+            training_ready=False,
+            note=(
+                "This demo scans publicly documented incident examples for "
+                "reported patterns. It does not train a model or estimate "
+                "calibrated accident probabilities."
             ),
         )

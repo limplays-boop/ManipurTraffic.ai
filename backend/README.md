@@ -74,7 +74,12 @@ sanitized and never include credentials.
   is unavailable and labels that estimate as not traffic-adjusted.
 - `GET /api/traffic/location?latitude=24.817&longitude=93.9368` returns live
   speed, free-flow speed, delay, confidence, and geometry for the nearest road
-  segment. The TomTom key must also have Traffic Flow Segment Data access.
+  segment. It also returns a `risk_assessment` calculated from that live flow
+  reading and current Open-Meteo weather for the selected coordinates. The
+  TomTom key must also have Traffic Flow Segment Data access.
+- `POST /api/traffic/route` includes a route risk assessment when TomTom returns
+  a current-versus-free-flow travel-time comparison. OSRM fallback routes do not
+  receive a live risk score.
 - `GET /api/traffic/incidents` accepts a map viewport as
   `min_longitude`, `min_latitude`, `max_longitude`, and `max_latitude`, then returns
   current TomTom incident geometry and event details. TomTom limits incident
@@ -82,6 +87,24 @@ sanitized and never include credentials.
 - The current TomTom free plan lists 20,000 monthly Routing API requests and
   2,500 monthly Traffic Incidents API requests. Actual Manipur road-level coverage
   still needs to be confirmed with the project's key and viewport.
+
+## Live traffic risk index
+
+`live-traffic-risk-v1` uses live TomTom traffic flow or route travel-time
+comparisons, plus current Open-Meteo weather when available. It calculates
+traffic pressure from speed reduction (70%) and relative extra travel time
+(30%), then adds a weather-code severity adjustment of up to 35 points. A
+TomTom road-closure report sets the location score to critical. Risk bands are
+low (<30), moderate (30–59), high (60–79), and critical (80+). The response
+includes each measured factor and its source. If weather is unavailable, the
+traffic-only score is returned as partial; unavailable traffic data never gets
+replaced with a sample value.
+
+This is a live operational index, not a trained machine-learning model or an
+accident probability. The scoring bands and weather adjustment have not been
+calibrated against Manipur crash outcomes or traffic exposure. The separate
+public-incident panel is the small report-based demo and is not used to score
+live traffic.
 
 Accident history remains a separate data layer. The MoRTH report contains a
 small 2016–2018 table of Manipur NH 102 high-accident locations, but it does not
@@ -103,6 +126,18 @@ section below for the imported rows and their limits.
   Review the provider's [terms](https://open-meteo.com/en/terms) and data
   attribution requirements before deployment; its free API is limited to
   non-commercial use.
+
+## Public demo incident examples
+
+GET /api/accidents/demo returns two anonymized incident examples summarized from
+public Manipur Police FIR copies, plus a transparent keyword-based pattern scan
+for two-wheeler involvement, turning/crossing conflicts, and serious injuries.
+This is a rule-based demonstration, not a trained model or calibrated risk
+prediction; it reports matching counts only within this tiny sample and returns
+training_ready: false. Two crash reports without comparison periods or
+historical conditions cannot train a reliable model. The endpoint omits direct
+source links because the public FIR copies contain personal details; source URLs
+remain in the local historical CSV for maintainers.
 
 ## Published Manipur accident history
 

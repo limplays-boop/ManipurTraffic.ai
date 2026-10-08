@@ -46,3 +46,51 @@ class HistoricalAccidentHistoryResponse(BaseModel):
     event_level_records_available: Literal[False]
     training_ready: Literal[False]
     note: str
+
+
+class PublicAccidentDemoIncident(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    demo_id: str
+    occurred_at_local: str
+    district: str
+    location_description: str
+    road_reference: str | None
+    event_type_reported: str
+    vehicles_reported: list[str]
+    injury_outcome_reported: str
+    fatality_outcome_reported: str
+    weather_reported: str | None
+    traffic_reported: str | None
+    latitude: float | None
+    longitude: float | None
+    coordinates_status: Literal["not_geocoded"]
+    report_nature: str
+    source_reference: str
+    training_eligible: Literal[False]
+    limitations: str
+
+
+class PublicAccidentDemoPattern(BaseModel):
+    name: str
+    matched_reports: int = Field(ge=0)
+    sample_size: int = Field(ge=0)
+    evidence_rule: str
+
+
+class PublicAccidentDemoAnalysis(BaseModel):
+    model_name: str
+    method: Literal["rule_based_pattern_scan"]
+    sample_size: int = Field(ge=0)
+    patterns: list[PublicAccidentDemoPattern]
+    risk_score_available: Literal[False]
+    note: str
+
+
+class PublicAccidentDemoResponse(BaseModel):
+    status: Literal["demo_only"]
+    state: Literal["Manipur"]
+    incidents: list[PublicAccidentDemoIncident]
+    analysis: PublicAccidentDemoAnalysis
+    training_ready: Literal[False]
+    note: str

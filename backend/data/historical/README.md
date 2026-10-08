@@ -16,6 +16,25 @@ time period; state totals must not be treated as road-level observations.
   report does not provide coordinates and they have not been independently
   verified. The CSV flags a mismatch between the reported and recomputed
   accident total for source row 145 (10 reported; 11 from the yearly counts).
+- `user_provided_2024_manipur_state_road_accidents.csv` and
+  `user_provided_2024_manipur_state_fatalities.csv` each contain the Manipur
+  state row filtered from the user-provided 2024 state summary CSVs. The 2020–2023
+  values match the existing MoRTH state totals above. The supplied files did not
+  include publication metadata, so verify their source before citing the 2024
+  values as authoritative. These are statewide annual aggregates, not crash
+  event records.
+
+## Public incident examples for the demo
+
+manipur_public_demo_incidents.csv contains two anonymized example records
+summarized from public Manipur Police FIR copies. It keeps the reported time,
+location text, vehicle types, and injury outcome while excluding names, phone
+numbers, addresses, and vehicle registration numbers. The reports do not supply
+verified coordinates, weather, traffic exposure, or matched non-crash
+observations. One record is a complainant narrative; neither record is
+sufficient to train or validate an accident-risk model. Source URLs are retained
+in the CSV for provenance, but the demo API does not return them because the
+public FIR copies contain personal details.
 
 ## Limits for prediction
 
@@ -43,4 +62,3 @@ weather and road/traffic exposure records. The e-DAR portal is at
   <https://www.blackspot.morth.gov.in/>
 - e-DAR India:
   <https://irad.parivahan.gov.in/>
-

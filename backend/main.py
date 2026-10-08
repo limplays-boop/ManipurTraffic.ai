@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from models.accident_history import HistoricalAccidentHistoryResponse
+from models.accident_history import (
+    HistoricalAccidentHistoryResponse,
+    PublicAccidentDemoResponse,
+)
 from models.risk import (
     RiskMapResponse,
     RiskObservationBatchCreate,
@@ -21,6 +24,7 @@ from services.risk_engine import RiskEngine, RiskFactors
 from services.risk_repository import RiskRepository
 from services.tomtom_provider import TomTomIncidentProvider
 from services.traffic_provider import create_traffic_provider
+from services.traffic_risk_engine import TrafficRiskEngine
 from services.weather_provider import OpenMeteoWeatherProvider
 
 
@@ -42,6 +46,7 @@ traffic_provider = create_traffic_provider()
 incident_provider = TomTomIncidentProvider()
 weather_provider = OpenMeteoWeatherProvider()
 risk_engine = RiskEngine()
+traffic_risk_engine = TrafficRiskEngine()
 risk_analytics = RiskAnalytics(risk_engine)
 risk_repository = RiskRepository()
 historical_accident_provider = HistoricalAccidentProvider()
@@ -63,12 +68,21 @@ def _build_risk_point(observation: RiskObservationCreate) -> RiskPoint:
     )
 
 
+def _get_current_weather(latitude: float, longitude: float) -> WeatherCurrent | None:
+    try:
+        weather = weather_provider.get_current(latitude, longitude)
+        return weather if weather.status == "available" else None
+    except RuntimeError:
+        return None
+
+
 @app.get("/")
 def root():
     return {
         "message": "Manipur Traffic AI backend is running",
         "risk_analysis": "available",
         "risk_model": risk_engine.MODEL_VERSION,
+        "traffic_risk_model": traffic_risk_engine.MODEL_VERSION,
     }
 
 
@@ -78,6 +92,7 @@ def health():
         "status": "ok",
         "risk_observations": risk_repository.count(),
         "risk_model": risk_engine.MODEL_VERSION,
+        "traffic_risk_model": traffic_risk_engine.MODEL_VERSION,
     }
 
 
@@ -100,6 +115,20 @@ def get_historical_accident_data():
         raise HTTPException(
             status_code=503,
             detail="Published historical accident data is unavailable.",
+        ) from error
+
+
+@app.get(
+    "/api/accidents/demo",
+    response_model=PublicAccidentDemoResponse,
+)
+def get_public_demo_accidents():
+    try:
+        return historical_accident_provider.get_demo_incidents()
+    except (OSError, ValueError, KeyError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Public demo incident records are unavailable.",
         ) from error
 
 
@@ -190,11 +219,36 @@ def get_live_traffic_route(request: TrafficRouteRequest):
     end = (request.destination_latitude, request.destination_longitude)
     try:
         route = traffic_provider.get_live_route(start, end)
+        risk_assessment = None
+        free_flow_time = route.get("free_flow_travel_time_seconds")
+        duration = route.get("travel_duration_seconds")
+        distance = route.get("distance_meters")
+        if (
+            isinstance(free_flow_time, (int, float))
+            and free_flow_time > 0
+            and isinstance(duration, (int, float))
+            and duration > 0
+            and isinstance(distance, (int, float))
+        ):
+            geometry_points = route.get("geometry", {}).get("coordinates", [])
+            midpoint = geometry_points[len(geometry_points) // 2]
+            midpoint_longitude, midpoint_latitude = midpoint
+            traffic_snapshot = {
+                "current_speed_kmh": distance / duration * 3.6,
+                "free_flow_speed_kmh": distance / free_flow_time * 3.6,
+                "current_travel_time_seconds": duration,
+                "free_flow_travel_time_seconds": free_flow_time,
+            }
+            risk_assessment = traffic_risk_engine.assess(
+                traffic_snapshot,
+                _get_current_weather(midpoint_latitude, midpoint_longitude),
+            ).model_dump(mode="json")
         return {
             "status": "available",
             "data_source": traffic_provider.source_name,
             "timestamp": _now_utc(),
             **route,
+            "risk_assessment": risk_assessment,
         }
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
@@ -206,9 +260,18 @@ def get_live_traffic_at_location(
     longitude: float = Query(ge=-180, le=180),
 ):
     try:
-        return traffic_provider.get_traffic_at_location(latitude, longitude)
+        traffic = traffic_provider.get_traffic_at_location(latitude, longitude)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from None
+
+    assessment = traffic_risk_engine.assess(
+        traffic,
+        _get_current_weather(latitude, longitude),
+    )
+    return {
+        **traffic,
+        "risk_assessment": assessment.model_dump(mode="json"),
+    }
 
 
 @app.get("/api/traffic/incidents")

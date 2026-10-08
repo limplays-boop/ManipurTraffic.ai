@@ -165,11 +165,18 @@ class TomTomTrafficProvider(TrafficProvider):
             raise RuntimeError("TomTom route response has no usable route geometry.")
 
         delay = summary.get("trafficDelayDurationInSeconds")
+        traffic_delay = max(0, int(delay)) if delay is not None else None
+        free_flow_duration = (
+            max(0, duration_seconds - traffic_delay)
+            if traffic_delay is not None
+            else None
+        )
         self._status = "available"
         return {
             "distance_meters": distance_meters,
             "travel_duration_seconds": duration_seconds,
-            "traffic_delay_seconds": int(delay) if delay is not None else None,
+            "traffic_delay_seconds": traffic_delay,
+            "free_flow_travel_time_seconds": free_flow_duration,
             "geometry": {"type": "LineString", "coordinates": coordinates},
         }
 

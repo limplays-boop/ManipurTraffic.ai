@@ -113,23 +113,6 @@ function extractRiskPoints(value: unknown): RiskPoint[] {
   return []
 }
 
-function isEmptyMapResponse(value: unknown): boolean {
-  if (Array.isArray(value)) return value.length === 0
-  if (!isRecord(value)) return false
-  if (
-    value.type === 'FeatureCollection' &&
-    Array.isArray(value.features) &&
-    value.features.length === 0
-  ) return true
-
-  return ['risk_map', 'risk_points', 'points', 'locations', 'risk_areas', 'features'].some(
-    (key) => {
-      const collection = value[key]
-      return Array.isArray(collection) && collection.length === 0
-    },
-  )
-}
-
 function propertyValue(properties: Record<string, unknown>, keys: string[]): unknown {
   const foundKey = keys.find((key) => properties[key] !== undefined && properties[key] !== null)
   return foundKey ? properties[foundKey] : undefined
@@ -250,10 +233,6 @@ function MapView({
     state.status === 'available' || state.status === 'empty'
       ? extractRiskPoints(state.data)
       : []
-  const isEmptyResponse =
-    (state.status === 'empty' || state.status === 'available') &&
-    isEmptyMapResponse(state.data)
-
   return (
     <div className="map-canvas">
       <MapContainer
@@ -357,7 +336,9 @@ function MapView({
         ) : null}
       </MapContainer>
       {state.status === 'loading' ? (
-        <div className="map-overlay" role="status">Loading backend risk layer…</div>
+        <div className="map-overlay map-overlay-loading" role="status" aria-label="Loading risk map">
+          <span className="loading-spinner" aria-hidden="true" />
+        </div>
       ) : state.status === 'unavailable' ? (
         <div className="map-overlay" role="status">
           <strong>Backend risk layer unavailable</strong>
@@ -367,15 +348,6 @@ function MapView({
         <div className="map-overlay map-overlay-error" role="alert">
           <strong>Backend risk layer could not be loaded</strong>
           <span>{state.message}</span>
-        </div>
-      ) : points.length === 0 ? (
-        <div className="map-overlay" role="status">
-          <strong>{isEmptyResponse ? 'No recorded risk locations' : 'No mappable risk locations'}</strong>
-          <span>
-            {isEmptyResponse
-              ? 'The backend has not returned any recorded risk locations.'
-              : 'Risk locations appear here only when returned by the backend.'}
-          </span>
         </div>
       ) : null}
       <a

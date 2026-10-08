@@ -55,6 +55,42 @@ type CurrentWeather = {
   message?: string | null
 }
 
+type PublicDemoIncident = {
+  demo_id: string
+  occurred_at_local: string
+  district: string
+  location_description: string
+  road_reference: string | null
+  event_type_reported: string
+  vehicles_reported: string[]
+  injury_outcome_reported: string
+  fatality_outcome_reported: string
+  source_reference: string
+}
+
+type PublicDemoPattern = {
+  name: string
+  matched_reports: number
+  sample_size: number
+  evidence_rule: string
+}
+
+type PublicDemoResponse = {
+  status: 'demo_only'
+  state: 'Manipur'
+  incidents: PublicDemoIncident[]
+  analysis: {
+    model_name: string
+    method: 'rule_based_pattern_scan'
+    sample_size: number
+    patterns: PublicDemoPattern[]
+    risk_score_available: false
+    note: string
+  }
+  training_ready: false
+  note: string
+}
+
 type DashboardData = {
   health: RemoteData<unknown>
   provider: RemoteData<TrafficProvider>
@@ -63,6 +99,7 @@ type DashboardData = {
   riskMap: RemoteData<unknown>
   observations: RemoteData<unknown>
   patterns: RemoteData<unknown>
+  demo: RemoteData<PublicDemoResponse>
 }
 
 type ToolMode = 'search' | 'directions'
@@ -133,6 +170,7 @@ const emptyDashboard: DashboardData = {
   riskMap: { status: 'loading' },
   observations: { status: 'loading' },
   patterns: { status: 'loading' },
+  demo: { status: 'loading' },
 }
 
 async function readEndpoint<T>(path: string): Promise<RemoteData<T>> {
@@ -172,6 +210,7 @@ function isEmptyPayload(value: unknown): boolean {
     'roads',
     'observations',
     'patterns',
+    'incidents',
     'risk_map',
     'risk_points',
     'points',
@@ -208,9 +247,22 @@ function formatWeatherTime(value: string | null | undefined): string | null {
   })
 }
 
+function LoadingIndicator({ label = 'Loading' }: { label?: string }) {
+  return (
+    <span className="loading-indicator" role="status">
+      <span className="loading-spinner" aria-hidden="true" />
+      <span className="visually-hidden">{label}</span>
+    </span>
+  )
+}
+
 function DataState({ state }: { state: RemoteData<unknown> }) {
   if (state.status === 'loading') {
-    return <p className="state-message">Loading from the backend…</p>
+    return (
+      <div className="state-message state-loading">
+        <LoadingIndicator label="Loading data" />
+      </div>
+    )
   }
   if (state.status === 'empty') {
     return <p className="state-message">The backend returned an empty response.</p>
@@ -298,6 +350,74 @@ function RecordTable({
   )
 }
 
+function DemoIncidentAnalysis({
+  state,
+}: {
+  state: RemoteData<PublicDemoResponse>
+}) {
+  if (state.status !== 'available' || !state.data) {
+    if (state.status === 'empty') {
+      return <p className="state-message">No public demo reports are available.</p>
+    }
+    return <DataState state={state} />
+  }
+
+  const { incidents, analysis } = state.data
+
+  return (
+    <div className="demo-analysis">
+      <div className="demo-analysis-heading">
+        <div>
+          <span className="demo-status">DEMO · RULE-BASED</span>
+          <h4>{analysis.model_name.replace(/^TR-04\s*/i, '')}</h4>
+          <p>{analysis.note}</p>
+        </div>
+        <div className="demo-sample-count">
+          <strong>{analysis.sample_size}</strong>
+          <span>source reports</span>
+        </div>
+      </div>
+
+      <div className="demo-patterns">
+        {analysis.patterns.map((pattern) => (
+          <article className="demo-pattern" key={pattern.name}>
+            <span>{pattern.matched_reports} of {pattern.sample_size} reports</span>
+            <strong>{pattern.name}</strong>
+            <small>{pattern.evidence_rule}</small>
+          </article>
+        ))}
+      </div>
+
+      <div className="demo-incidents">
+        {incidents.map((incident) => (
+          <article className="demo-incident" key={incident.demo_id}>
+            <div className="demo-incident-topline">
+              <strong>{incident.location_description}</strong>
+              <time dateTime={incident.occurred_at_local}>
+                {formatWeatherTime(incident.occurred_at_local)}
+              </time>
+            </div>
+            <p>{incident.district}{incident.road_reference ? ' · ' + incident.road_reference : ''}</p>
+            <p>{incident.event_type_reported}</p>
+            <dl>
+              <div><dt>Vehicles</dt><dd>{incident.vehicles_reported.join(', ')}</dd></div>
+              <div><dt>Reported outcome</dt><dd>{incident.injury_outcome_reported}</dd></div>
+              <div><dt>Fatalities</dt><dd>{incident.fatality_outcome_reported}</dd></div>
+            </dl>
+            <small className="demo-source">{incident.source_reference}</small>
+          </article>
+        ))}
+      </div>
+
+      <p className="demo-caveat">
+        The reports do not include verified crash coordinates, historical traffic or weather,
+        or non-crash comparison records. Sample patterns are not Manipur-wide rates or risk
+        predictions, and these examples are not shown as exact map pins.
+      </p>
+    </div>
+  )
+}
+
 function App() {
   const [dashboard, setDashboard] = useState<DashboardData>(emptyDashboard)
   const [refreshing, setRefreshing] = useState(false)
@@ -333,7 +453,7 @@ function App() {
   const [showRisk, setShowRisk] = useState(false)
 
   const fetchDashboard = useCallback(async (): Promise<DashboardData> => {
-    const [health, provider, weather, riskMap, observations, patterns] =
+    const [health, provider, weather, riskMap, observations, patterns, demo] =
       await Promise.all([
         readEndpoint<unknown>('/api/health'),
         readEndpoint<TrafficProvider>('/api/traffic/provider'),
@@ -341,6 +461,7 @@ function App() {
         readEndpoint<unknown>('/api/risk/map'),
         readEndpoint<unknown>('/api/risk/observations'),
         readEndpoint<unknown>('/api/risk/patterns'),
+        readEndpoint<PublicDemoResponse>('/api/accidents/demo'),
       ])
 
     // Live TomTom traffic is requested only after the browser grants location access.
@@ -352,6 +473,7 @@ function App() {
       riskMap,
       observations,
       patterns,
+      demo,
     }
   }, [])
 
@@ -449,7 +571,7 @@ function App() {
     }
   }
 
-  const selectPlace = (place: MapPlace) => {
+  const selectPlace = async (place: MapPlace) => {
     setSearchFocused(false)
     setSearchSuggestions([])
     setSearchSuggestionState('idle')
@@ -457,8 +579,17 @@ function App() {
     setSearchQuery(place.name)
     setSearchResults([])
     setSearchState('idle')
-    setLocationTraffic({ status: 'empty' })
+    setLocationTraffic({ status: 'loading' })
     setRoutePreview(null)
+    try {
+      const traffic = await getLiveTrafficAtLocation(place)
+      setLocationTraffic({ status: 'available', data: traffic })
+    } catch (error) {
+      setLocationTraffic({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Live traffic at this location is unavailable.',
+      })
+    }
   }
 
   const loadCurrentLocationForSearch = async () => {
@@ -646,10 +777,11 @@ function App() {
           </span>
         </a>
         <div className="header-tools">
-          <div className={`header-status ${dashboard.health.status}`} aria-live="polite">
-            {!healthUnavailable ? <span className="status-light" aria-hidden="true" /> : null}
-            <span>{healthLabel}</span>
-          </div>
+          {healthUnavailable ? (
+            <div className={`header-status ${dashboard.health.status}`} aria-live="polite">
+              <span>{healthLabel}</span>
+            </div>
+          ) : null}
           <button className="header-refresh" type="button" onClick={() => void refresh()} disabled={refreshing}>
             <span aria-hidden="true">{refreshing ? '…' : '↻'}</span>
             <span className="refresh-label">{refreshing ? 'Checking' : 'Refresh'}</span>
@@ -662,7 +794,7 @@ function App() {
           <aside className="map-sidebar">
             <div className="sidebar-heading">
               <div>
-                <span className="eyebrow">MANIPUR · TR-04</span>
+                <span className="eyebrow">MANIPUR</span>
                 <h1>Explore the map</h1>
               </div>
               <span className="checked-time" title="Last backend check">
@@ -779,9 +911,6 @@ function App() {
                     <span aria-hidden="true">◎</span>
                     {searchLocationLoading ? 'Getting location and traffic…' : 'Use current location'}
                   </button>
-                  <p className="service-note">
-                    Suggestions use Photon with OpenStreetMap data, focused on Manipur. The browser asks once for location access; your choice is remembered for this site.
-                  </p>
                   {searchState === 'loading' ? (
                     <p className="tool-message" role="status">Searching OpenStreetMap…</p>
                   ) : null}
@@ -833,9 +962,9 @@ function App() {
                     <p className="tool-message tool-error" role="alert">{locationTraffic.message}</p>
                   ) : null}
                   {locationTraffic.status === 'available' && locationTraffic.data ? (
-                    <section className="location-traffic-card" aria-label="Live traffic near current location">
+                    <section className="location-traffic-card" aria-label="Live traffic at selected location">
                       <div className="location-traffic-heading">
-                        <span><strong>Live traffic near you</strong><small>Nearest road segment · {locationTraffic.data.data_source}</small></span>
+                        <span><strong>Live traffic at selected location</strong><small>Nearest road segment · {locationTraffic.data.data_source}</small></span>
                         <span className={`traffic-condition${locationTraffic.data.road_closure ? ' is-closed' : ''}`}>
                           {locationTraffic.data.road_closure ? 'Closed' : 'Live'}
                         </span>
@@ -845,6 +974,33 @@ function App() {
                         <span><small>Free-flow speed</small><strong>{locationTraffic.data.free_flow_speed_kmh.toFixed(0)} <em>km/h</em></strong></span>
                         <span><small>Extra delay</small><strong>{pointTrafficDelayLabel}</strong></span>
                         <span><small>Confidence</small><strong>{pointTrafficConfidence == null ? '—' : `${Math.round(pointTrafficConfidence * 100)}%`}</strong></span>
+                      </div>
+                      <div className="live-risk-index" aria-label="Live traffic risk assessment">
+                        <div className="live-risk-index-heading">
+                          <span><strong>Live traffic risk index</strong><small>{locationTraffic.data.risk_assessment.model_name}</small></span>
+                          <span className={`live-risk-level level-${locationTraffic.data.risk_assessment.risk_level}`}>
+                            {locationTraffic.data.risk_assessment.risk_level}
+                          </span>
+                        </div>
+                        <div className="live-risk-score">
+                          <strong>{locationTraffic.data.risk_assessment.risk_score == null ? '—' : Math.round(locationTraffic.data.risk_assessment.risk_score)}</strong>
+                          <span>/100</span>
+                          {locationTraffic.data.risk_assessment.status === 'partial' ? <small>Partial inputs</small> : null}
+                        </div>
+                        <p className="live-risk-caption">Live conditions index, not a crash probability.</p>
+                        <div className="live-risk-factors">
+                          {locationTraffic.data.risk_assessment.factors.map((factor) => (
+                            <div className="live-risk-factor" key={factor.name}>
+                              <span><strong>{factor.name}</strong><small>{factor.observed_value} · {factor.data_source}</small></span>
+                              <b>{Math.round(factor.score)}</b>
+                            </div>
+                          ))}
+                        </div>
+                        <details className="live-risk-method">
+                          <summary>How this index is calculated</summary>
+                          <p>{locationTraffic.data.risk_assessment.method_summary}</p>
+                          <p>{locationTraffic.data.risk_assessment.limitation}</p>
+                        </details>
                       </div>
                       <p className="location-traffic-updated">
                         {pointTrafficFetchedAt ? `Updated ${formatWeatherTime(pointTrafficFetchedAt)}` : 'Update time unavailable'}
@@ -1030,6 +1186,27 @@ function App() {
                           ? `${routePreview.source} live traffic${routePreview.trafficDelayMinutes === null ? '' : ` · ${Math.round(routePreview.trafficDelayMinutes)} min delay`}`
                           : `${routePreview.source} estimate · not live traffic-adjusted`}
                       </small>
+                      {routePreview.trafficAdjusted && routePreview.riskAssessment ? (
+                        <div className="route-risk-result">
+                          <strong>
+                            Live route risk: {routePreview.riskAssessment.risk_score == null
+                              ? 'unavailable'
+                              : `${routePreview.riskAssessment.risk_level} · ${Math.round(routePreview.riskAssessment.risk_score)}/100`}
+                          </strong>
+                          <small>Live conditions index, not a crash probability.</small>
+                          {routePreview.riskAssessment.factors.map((factor) => (
+                            <small key={factor.name}>
+                              {factor.name}: {Math.round(factor.score)}/100 · {factor.observed_value}
+                            </small>
+                          ))}
+                          <small>Assessed {formatWeatherTime(routePreview.riskAssessment.assessed_at)}</small>
+                          <details>
+                            <summary>Scoring method and limits</summary>
+                            <p>{routePreview.riskAssessment.method_summary}</p>
+                            <p>{routePreview.riskAssessment.limitation}</p>
+                          </details>
+                        </div>
+                      ) : null}
                       {routePreview.fallbackMessage ? (
                         <small className="route-fallback-note">
                           Live route unavailable: {routePreview.fallbackMessage}
@@ -1065,17 +1242,11 @@ function App() {
                     ? ''
                     : ` · ${Math.round(locationTraffic.data.traffic_delay_seconds / 60)} min delay`}
                 </p>
-              ) : (
+              ) : locationTraffic.status === 'error' ? (
                 <p className="source-explanation source-error">
-                  {providerStatus === 'not_configured'
-                    ? 'Configure a TomTom key on the backend to enable live traffic.'
-                    : locationTraffic.status === 'error'
-                      ? locationTraffic.message
-                      : locationTraffic.status === 'loading'
-                        ? 'Checking live traffic for your location…'
-                        : 'Use current location to request live traffic. The browser will ask for permission first.'}
+                  {locationTraffic.message}
                 </p>
-              )}
+              ) : null}
               <div className="weather-sidecard">
                 <div className="weather-side-heading">
                   <span className="weather-symbol" aria-hidden="true">◌</span>
@@ -1104,16 +1275,15 @@ function App() {
                     </p>
                   </>
                 ) : dashboard.weather.status === 'loading' ? (
-                  <p className="weather-update">Loading estimate…</p>
+                  <p className="weather-update weather-loading">
+                    <LoadingIndicator label="Loading weather estimate" />
+                  </p>
                 ) : dashboard.weather.status === 'error' || dashboard.weather.status === 'unavailable' ? (
                   <p className="weather-update source-error">{weatherData?.message ?? dashboard.weather.message}</p>
                 ) : (
                   <p className="weather-update">No current conditions returned.</p>
                 )}
               </div>
-              <p className="service-note sidebar-service-note">
-                Place search uses OpenStreetMap. Live traffic uses TomTom when enabled; route previews may fall back to an OSRM estimate.
-              </p>
             </section>
           </aside>
 
@@ -1151,10 +1321,10 @@ function App() {
         <section className="records-section" aria-label="Road risk records">
           <div className="records-heading">
             <div>
-              <span className="eyebrow">TR-04 DATA</span>
+              <span className="eyebrow">DATA</span>
               <h2>Recorded road risk</h2>
             </div>
-            <p>Risk is an explainable backend baseline, not a trained AI prediction.</p>
+            <p>The live traffic index uses current provider data; it is not an accident probability. The report-based analysis below remains a separate demo.</p>
           </div>
           <div className="records-grid">
             <section className="record-panel" aria-labelledby="observations-title">
@@ -1179,11 +1349,18 @@ function App() {
                 emptyMessage="No recurring risk patterns have been returned."
               />
             </section>
+            <section className="record-panel demo-panel" aria-labelledby="demo-title">
+              <div className="record-title">
+                <h3 id="demo-title">Demo AI analysis</h3>
+                <span>Public report sample</span>
+              </div>
+              <DemoIncidentAnalysis state={dashboard.demo} />
+            </section>
           </div>
         </section>
       </main>
       <footer className="page-footer">
-        <span>TR-04 · Manipur road risk monitoring</span>
+        <span>Manipur road risk monitoring</span>
         <span>Search and route services are public OpenStreetMap community services.</span>
       </footer>
     </div>
