@@ -2,133 +2,391 @@ import { useEffect, useState } from 'react'
 import {
   CircleMarker,
   MapContainer,
-  Marker,
+  Polyline,
   Popup,
   TileLayer,
+  useMap,
 } from 'react-leaflet'
+import type { LatLngBoundsExpression } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import type { RemoteMapState } from './api'
+import { getCurrentDeviceLocation, type MapPlace, type RoutePreview } from './mapServices'
 
-type TrafficStatus = 'clear' | 'moderate' | 'heavy' | 'critical'
-
-type TrafficPoint = {
-  name: string
+type RiskPoint = {
   latitude: number
   longitude: number
-  status: TrafficStatus
-  average_speed: number
-  vehicles: number
-  risk_score: number
+  label: string
+  properties: Record<string, unknown>
 }
 
-type TrafficResponse = {
-  city: string
-  data_source: string
-  roads: TrafficPoint[]
+type MapViewProps = {
+  state: RemoteMapState
+  selectedPlace: MapPlace | null
+  routeStart: MapPlace | null
+  routeEnd: MapPlace | null
+  route: RoutePreview | null
+  trafficSegment: [number, number][] | null
+  showRisk: boolean
+  onToggleRisk: () => void
+  onLocated: (place: MapPlace) => void
 }
 
-function getTrafficColor(status: TrafficStatus) {
-  switch (status) {
-    case 'clear':
-      return '#22c55e'
-    case 'moderate':
-      return '#facc15'
-    case 'heavy':
-      return '#f97316'
-    case 'critical':
-      return '#ef4444'
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function numericValue(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const number = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function makePoint(
+  coordinates: unknown,
+  properties: Record<string, unknown>,
+): RiskPoint | null {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return null
+  const longitude = numericValue(coordinates[0])
+  const latitude = numericValue(coordinates[1])
+  if (
+    latitude === null ||
+    longitude === null ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) return null
+
+  const label =
+    properties.name ??
+    properties.location ??
+    properties.road_name ??
+    properties.area ??
+    properties.id ??
+    'Risk location'
+
+  return {
+    latitude,
+    longitude,
+    label: String(label),
+    properties,
   }
 }
 
-function MapView() {
-  const [trafficPoints, setTrafficPoints] = useState<TrafficPoint[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
+function extractRiskPoints(value: unknown): RiskPoint[] {
+  if (!isRecord(value)) {
+    if (!Array.isArray(value)) return []
+    return value.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      if (
+        entry.type === 'Feature' &&
+        isRecord(entry.geometry) &&
+        entry.geometry.type === 'Point'
+      ) {
+        const properties = isRecord(entry.properties) ? entry.properties : {}
+        const point = makePoint(entry.geometry.coordinates, properties)
+        return point ? [point] : []
+      }
+      const properties = isRecord(entry.properties) ? entry.properties : entry
+      const latitude = entry.latitude ?? entry.lat
+      const longitude = entry.longitude ?? entry.lng ?? entry.lon
+      const point = makePoint([longitude, latitude], properties)
+      return point ? [point] : []
+    })
+  }
+
+  if (value.type === 'FeatureCollection' && Array.isArray(value.features)) {
+    return value.features.flatMap((feature) => {
+      if (!isRecord(feature) || !isRecord(feature.geometry)) return []
+      if (feature.geometry.type !== 'Point') return []
+      const properties = isRecord(feature.properties) ? feature.properties : {}
+      const point = makePoint(feature.geometry.coordinates, properties)
+      return point ? [point] : []
+    })
+  }
+
+  for (const key of ['risk_map', 'data', 'result', 'risk_points', 'points', 'locations', 'risk_areas', 'features']) {
+    if (value[key] && typeof value[key] === 'object') {
+      return extractRiskPoints(value[key])
+    }
+  }
+  return []
+}
+
+function isEmptyMapResponse(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 0
+  if (!isRecord(value)) return false
+  if (
+    value.type === 'FeatureCollection' &&
+    Array.isArray(value.features) &&
+    value.features.length === 0
+  ) return true
+
+  return ['risk_map', 'risk_points', 'points', 'locations', 'risk_areas', 'features'].some(
+    (key) => {
+      const collection = value[key]
+      return Array.isArray(collection) && collection.length === 0
+    },
+  )
+}
+
+function propertyValue(properties: Record<string, unknown>, keys: string[]): unknown {
+  const foundKey = keys.find((key) => properties[key] !== undefined && properties[key] !== null)
+  return foundKey ? properties[foundKey] : undefined
+}
+
+function markerColor(properties: Record<string, unknown>): string {
+  const severity = String(
+    propertyValue(properties, ['risk_level', 'severity', 'status']) ?? '',
+  ).toLowerCase()
+  if (severity === 'critical' || severity === 'high') return '#b64032'
+  if (severity === 'moderate' || severity === 'medium') return '#c27b20'
+  if (severity === 'low' || severity === 'clear') return '#39745b'
+  return '#315d73'
+}
+
+function valueLabel(key: string): string {
+  return key.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function printable(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
+function MapController({
+  selectedPlace,
+  route,
+}: {
+  selectedPlace: MapPlace | null
+  route: RoutePreview | null
+}) {
+  const map = useMap()
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/traffic/roads')
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch traffic data')
-        }
+    if (route?.coordinates.length) {
+      const bounds: LatLngBoundsExpression = route.coordinates
+      map.fitBounds(bounds, { padding: [52, 52], maxZoom: 15 })
+    } else if (selectedPlace) {
+      map.flyTo([selectedPlace.latitude, selectedPlace.longitude], 15, { duration: 0.65 })
+    }
+  }, [map, route, selectedPlace])
 
-        return response.json()
-      })
-      .then((data: TrafficResponse) => {
-        setTrafficPoints(data.roads)
-        setLoading(false)
-      })
-      .catch((error) => {
-        console.error('Traffic API error:', error)
-        setError(true)
-        setLoading(false)
-      })
-  }, [])
+  return null
+}
+
+function MapControls({
+  hasRisk,
+  showRisk,
+  onToggleRisk,
+  onLocated,
+}: {
+  hasRisk: boolean
+  showRisk: boolean
+  onToggleRisk: () => void
+  onLocated: (place: MapPlace) => void
+}) {
+  const map = useMap()
+  const [locating, setLocating] = useState(false)
+  const [locationError, setLocationError] = useState('')
+
+  const locate = async () => {
+    setLocationError('')
+    setLocating(true)
+    try {
+      const place = await getCurrentDeviceLocation()
+      map.flyTo([place.latitude, place.longitude], 15, { duration: 0.65 })
+      onLocated(place)
+    } catch (error) {
+      setLocationError(error instanceof Error ? error.message : 'Could not find your current location.')
+    } finally {
+      setLocating(false)
+    }
+  }
 
   return (
-    <MapContainer
-      center={[24.817, 93.9368]}
-      zoom={14}
-      scrollWheelZoom={true}
-      style={{ height: '100%', width: '100%' }}
-    >
-      <TileLayer
-        attribution="&copy; OpenStreetMap contributors"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+    <div className="map-controls" aria-label="Map controls">
+      <button
+        className="map-control-button"
+        type="button"
+        onClick={locate}
+        disabled={locating}
+        aria-label="Show my current location"
+        title="Show my location"
+      >
+        <span aria-hidden="true">{locating ? '…' : '◎'}</span>
+      </button>
+      <button
+        className={`map-control-button map-layer-button${showRisk ? ' is-active' : ''}`}
+        type="button"
+        onClick={onToggleRisk}
+        disabled={!hasRisk}
+        aria-pressed={showRisk}
+        title={hasRisk ? 'Toggle backend risk locations' : 'No backend risk locations are available'}
+      >
+        <span className="layer-glyph" aria-hidden="true">▱</span>
+        <span>Risk</span>
+      </button>
+      {locationError ? (
+        <p className="map-control-error" role="status">{locationError}</p>
+      ) : null}
+    </div>
+  )
+}
 
-      {/* Central Imphal monitoring point */}
-      <Marker position={[24.817, 93.9368]}>
-        <Popup>
-          <strong>Manipur Traffic AI</strong>
-          <br />
-          Central Imphal monitoring area
-        </Popup>
-      </Marker>
+function MapView({
+  state,
+  selectedPlace,
+  routeStart,
+  routeEnd,
+  route,
+  trafficSegment,
+  showRisk,
+  onToggleRisk,
+  onLocated,
+}: MapViewProps) {
+  const points =
+    state.status === 'available' || state.status === 'empty'
+      ? extractRiskPoints(state.data)
+      : []
+  const isEmptyResponse =
+    (state.status === 'empty' || state.status === 'available') &&
+    isEmptyMapResponse(state.data)
 
-      {/* Loading message */}
-      {loading && (
-        <div className="map-status">
-          Loading traffic data...
-        </div>
-      )}
-
-      {/* Error message */}
-      {error && (
-        <div className="map-status">
-          Unable to load traffic data.
-        </div>
-      )}
-
-      {/* Traffic points from FastAPI */}
-      {trafficPoints.map((point) => {
-        const color = getTrafficColor(point.status)
-
-        return (
+  return (
+    <div className="map-canvas">
+      <MapContainer
+        center={[24.817, 93.9368]}
+        zoom={13}
+        scrollWheelZoom
+        keyboard
+        attributionControl={false}
+        aria-label="OpenStreetMap of Imphal with place search, route preview, and backend risk locations"
+      >
+        <TileLayer
+          attribution=""
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        <MapController selectedPlace={selectedPlace} route={route} />
+        <MapControls
+          hasRisk={points.length > 0}
+          showRisk={showRisk}
+          onToggleRisk={onToggleRisk}
+          onLocated={onLocated}
+        />
+        {showRisk ? points.map((point, index) => {
+          const color = markerColor(point.properties)
+          const score = propertyValue(point.properties, ['risk_score', 'score'])
+          return (
+            <CircleMarker
+              key={`${point.latitude}-${point.longitude}-${index}`}
+              center={[point.latitude, point.longitude]}
+              radius={9}
+              pathOptions={{ color: '#fff', fillColor: color, fillOpacity: 0.94, weight: 3 }}
+            >
+              <Popup>
+                <strong>{point.label}</strong>
+                <dl className="map-popup-details">
+                  {score !== undefined ? (
+                    <div><dt>Risk score</dt><dd>{printable(score)}</dd></div>
+                  ) : null}
+                  {Object.entries(point.properties)
+                    .filter(([key, value]) =>
+                      !['name', 'location', 'road_name', 'area', 'id', 'risk_score', 'score'].includes(key) &&
+                      value !== null &&
+                      typeof value !== 'object',
+                    )
+                    .map(([key, value]) => (
+                      <div key={key}><dt>{valueLabel(key)}</dt><dd>{printable(value)}</dd></div>
+                    ))}
+                </dl>
+              </Popup>
+            </CircleMarker>
+          )
+        }) : null}
+        {trafficSegment && trafficSegment.length >= 2 ? (
+          <Polyline
+            positions={trafficSegment}
+            pathOptions={{ color: '#d87526', weight: 7, opacity: 0.9 }}
+          />
+        ) : null}
+        {route ? (
+          <Polyline
+            positions={route.coordinates}
+            pathOptions={{ color: '#fff', weight: 9, opacity: 0.92 }}
+            interactive={false}
+          />
+        ) : null}
+        {route ? (
+          <Polyline
+            positions={route.coordinates}
+            pathOptions={{ color: '#2676d2', weight: 6, opacity: 0.95 }}
+          />
+        ) : null}
+        {selectedPlace ? (
           <CircleMarker
-            key={point.name}
-            center={[point.latitude, point.longitude]}
-            radius={12}
-            pathOptions={{
-              color,
-              fillColor: color,
-              fillOpacity: 0.75,
-            }}
+            center={[selectedPlace.latitude, selectedPlace.longitude]}
+            radius={8}
+            pathOptions={{ color: '#fff', fillColor: '#2478d4', fillOpacity: 1, weight: 3 }}
           >
             <Popup>
-              <strong>{point.name}</strong>
+              <strong>{selectedPlace.name}</strong>
               <br />
-              Traffic: {point.status.toUpperCase()}
-              <br />
-              Average speed: {point.average_speed} km/h
-              <br />
-              Vehicles detected: {point.vehicles}
-              <br />
-              Risk score: {point.risk_score}/100
+              {selectedPlace.displayName}
             </Popup>
           </CircleMarker>
-        )
-      })}
-    </MapContainer>
+        ) : null}
+        {routeStart ? (
+          <CircleMarker
+            center={[routeStart.latitude, routeStart.longitude]}
+            radius={7}
+            pathOptions={{ color: '#fff', fillColor: '#317c54', fillOpacity: 1, weight: 3 }}
+          >
+            <Popup><strong>Start</strong><br />{routeStart.name}</Popup>
+          </CircleMarker>
+        ) : null}
+        {routeEnd ? (
+          <CircleMarker
+            center={[routeEnd.latitude, routeEnd.longitude]}
+            radius={7}
+            pathOptions={{ color: '#fff', fillColor: '#b34436', fillOpacity: 1, weight: 3 }}
+          >
+            <Popup><strong>Destination</strong><br />{routeEnd.name}</Popup>
+          </CircleMarker>
+        ) : null}
+      </MapContainer>
+      {state.status === 'loading' ? (
+        <div className="map-overlay" role="status">Loading backend risk layer…</div>
+      ) : state.status === 'unavailable' ? (
+        <div className="map-overlay" role="status">
+          <strong>Backend risk layer unavailable</strong>
+          <span>{state.message}</span>
+        </div>
+      ) : state.status === 'error' ? (
+        <div className="map-overlay map-overlay-error" role="alert">
+          <strong>Backend risk layer could not be loaded</strong>
+          <span>{state.message}</span>
+        </div>
+      ) : points.length === 0 ? (
+        <div className="map-overlay" role="status">
+          <strong>{isEmptyResponse ? 'No recorded risk locations' : 'No mappable risk locations'}</strong>
+          <span>
+            {isEmptyResponse
+              ? 'The backend has not returned any recorded risk locations.'
+              : 'Risk locations appear here only when returned by the backend.'}
+          </span>
+        </div>
+      ) : null}
+      <a
+        className="map-attribution"
+        href="https://www.openstreetmap.org/copyright"
+        target="_blank"
+        rel="noreferrer"
+      >
+        © OpenStreetMap contributors
+      </a>
+    </div>
   )
 }
 
